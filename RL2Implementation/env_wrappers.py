@@ -33,6 +33,7 @@ def worker(remote, parent_remote, env_fn_wrapper):
                              env.agents])
             else:
                 remote.send(['agent' for _ in env.agents])
+            pass
         else:
             raise NotImplementedError
 

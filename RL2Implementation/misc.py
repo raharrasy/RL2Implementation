@@ -14,7 +14,7 @@ def onehot_from_logits(logits, eps=0.0):
     (based on given epsilon)
     """
     # get best (according to current policy) actions in one-hot form
-    argmax_acs = (logits == logits.max(1, keepdim=True)[0]).float()
+    argmax_acs = (logits == logits.max(-1, keepdim=True)[0]).float()
     if eps == 0.0:
         return argmax_acs
     # get random actions in one-hot form

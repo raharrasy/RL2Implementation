@@ -11,6 +11,7 @@ import torch.optim as optim
 import random
 from misc import onehot_from_logits
 from agent import Agent
+from matplotlib import pyplot as plt
 
 import argparse
 
@@ -27,11 +28,11 @@ parser.add_argument("--hidden_dim", type=int, default=64,
                     help="MLP hidden dim for V and Policy")
 parser.add_argument("--action_space_size", type=int, default=5,
                     help="Action Space Size")
-parser.add_argument("--lr", type=float, default=1e-3,
+parser.add_argument("--lr", type=float, default=5e-4,
                     help="Learning rate")
 parser.add_argument("--max_episode_length", type=int, default=25,
                     help="Maximum episode length")
-parser.add_argument("--thread_update_length", type=int, default=10,
+parser.add_argument("--thread_update_length", type=int, default=5,
                     help="Wait length for updates")
 parser.add_argument('--gamma', type=float, default=0.99,
                     help='Discount Factor')
@@ -39,11 +40,11 @@ parser.add_argument('--tau', type=float, default=0.99,
                     help='parameter for GAE')
 parser.add_argument('--entropyCoef', type=float, default=1e-4,
                     help='entropy term coefficient')
-parser.add_argument('--criticLossCoef', type=float, default=1.0,
+parser.add_argument('--criticLossCoef', type=float, default=5.0,
                     help='value loss coefficient')
-parser.add_argument('--maxGrads', type=float, default=5,
+parser.add_argument('--maxGrads', type=float, default=1,
                     help='maximum gradient before clipped')
-parser.add_argument('--eval_freq', type=float, default=200,
+parser.add_argument('--eval_freq', type=float, default=10,
                     help='maximum gradient before clipped')
 parser.add_argument('--truncate_grad', type=bool, default=False,
                     help='maximum gradient before clipped')
@@ -97,6 +98,7 @@ def make_env(scenario_name, benchmark=False, discrete_action=False):
     return env
 
 
+
 def train(args):
     environment = [make_env("simple_speaker_listener", discrete_action=True) for a in range(args.num_threads)]
     for rank in range(len(environment)):
@@ -107,7 +109,9 @@ def train(args):
     concat_elements = [{'timestep_left': 0} for idx in range(args.num_threads)]
     hidden_elements = [None for idx in range(args.num_threads)]
 
-    while True:
+    eval_results = []
+
+    while episode_number < 8000:
         for idx in range(args.num_threads):
             a = concat_elements[idx]
             if a['timestep_left'] == 0:
@@ -142,7 +146,18 @@ def train(args):
                      args, last_hiddens, concat_elements[0]['timestep_left'])
         episode_number += 1
         if episode_number % args.eval_freq == 0:
-            eval(args, agent)
+            returns = eval(args, agent)
+            print("Done ",(episode_number/args.eval_freq))
+            average_return = sum(returns)/len(returns)
+            eval_results.append(average_return)
+            print("Eval Results : ", eval_results)
+            if len(eval_results) > 10:
+                f = plt.figure()
+                plt.plot(eval_results)
+                plt.ylim([-40.0, 0.0])
+                f.savefig("results.pdf", bbox_inches='tight')
+
+
 
 
 def get_rollouts(environment, agent, args, hidden_states, concat_elements, opponent, rollout_length=10, timesteps_left=25):
@@ -175,8 +190,10 @@ def get_rollouts(environment, agent, args, hidden_states, concat_elements, oppon
         prev_actions = agent_acts[0]
         prev_rewards = torch.Tensor([[rewards[0]]])
         prev_dones = torch.Tensor([[dones[0]]])
-
-    loss_elements['rewards'] = (loss_elements['rewards'] - loss_elements['rewards'].mean()) / loss_elements['rewards'].std()
+    if loss_elements['rewards'].std().item() > 1e-6 :
+        loss_elements['rewards'] = (loss_elements['rewards'] - loss_elements['rewards'].mean()) / (loss_elements['rewards'].std())
+    else :
+        loss_elements['rewards'] = torch.zeros_like(loss_elements['rewards'])
     concat_elements['state'] = states
     concat_elements['actions'] = prev_actions
     concat_elements['rewards'] = prev_rewards
@@ -190,7 +207,8 @@ def eval(args, agent):
     environment = make_env("simple_speaker_listener", discrete_action=True)
 
     episode_number = 0
-    while episode_number < 10:
+    returns_obtained = []
+    while episode_number < 50:
         oppo_model = load_next_opponent()
         hidden_states = (torch.zeros((1, 1, args.hidden_dim)), torch.zeros((1, 1, args.hidden_dim)))
         total_reward = 0
@@ -201,7 +219,7 @@ def eval(args, agent):
             tensor_state = [torch.Tensor([raw_states[0]]), torch.Tensor([raw_states[1]])]
             action_adds = torch.zeros((1, args.action_space_size))
             reward_adds = torch.zeros((1, 1))
-            environment.render()
+            #environment.render()
             done_adds = torch.zeros((1, 1))
             opponent_input_tensor = tensor_state[0]
             combined_input_tensor = torch.cat((tensor_state[1], action_adds, reward_adds, done_adds), dim=-1)
@@ -214,6 +232,7 @@ def eval(args, agent):
 
                 policy, _, hidden_states = agent.step(tensor_state[1], action_adds, reward_adds,done_adds, hidden_states)
                 listener_act = onehot_from_logits(policy)
+                #listener_act = agent.act(policy)
                 speaker_out_list = oppo_model.step(opponent_input_tensor, explore=False)
 
                 print(F.softmax(policy, dim=-1))
@@ -223,7 +242,7 @@ def eval(args, agent):
 
                 chosen_acts = [speaker_out_list[0].numpy(), listener_act[0][0].numpy()]
                 newObservation, reward, done, info = environment.step(chosen_acts)
-                environment.render()
+                #environment.render()
                 total_reward += reward[0]
                 episode_reward += reward[0]
                 step_number += 1
@@ -237,8 +256,10 @@ def eval(args, agent):
                     raw_states = newObservation
             f = open("output.txt", "a")
             f.write(str(episode_reward) + "\n")
+            returns_obtained.append(episode_reward)
             f.close()
         episode_number += 1
+    return returns_obtained
 
 
 if __name__ == '__main__':
